@@ -1,57 +1,69 @@
-from pythonosc import dispatcher, osc_server
+"""
+Mind Monitor - EEG OSC Receiver
+Coded: James Clutterbuck (2022)
+Requires: pip install python-osc
+"""
 from datetime import datetime
-import csv
-import socket
+from pythonosc import dispatcher
+from pythonosc import osc_server
 
-def get_local_ip():
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception as e:
-        print("Error getting local IP:", e)
-        return "127.0.0.1"
+ip = "0.0.0.0"
+port = 5001
+filePath = 'OSC-Python-Recording.csv'
+auxCount = -1
+recording = False
 
-csv_file = "muse_data.csv"
-with open(csv_file, "w", newline="") as f:
-    writer = csv.writer(f)
-    writer.writerow(["Timestamp", "Metric", "Value"])
+f = open (filePath,'w+')
 
-def save_data(address, *args):
-    timestamp = datetime.now().isoformat()
-    metric = address.split("/")[-1]
-    value = args[0] if args else None
-    print(f"[SERVER] Received {metric}: {value} at {timestamp}")
-    with open(csv_file, "a", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow([timestamp, metric, value])
+def writeFileHeader():
+    global auxCount
+    fileString = 'TimeStamp,RAW_TP9,RAW_AF7,RAW_AF8,RAW_TP10,'
+    for x in range(0,auxCount):
+        fileString += 'AUX'+str(x+1)+','
+    fileString +='Marker\n'
+    f.write(fileString)
+
+def eeg_handler(address: str,*args):
+    global recording
+    global auxCount
+    print(f"Received EEG: {args}")  # <-- ADD THIS LINE
+    if auxCount==-1:
+        auxCount = len(args)-4
+        writeFileHeader()
+    if recording:
+        timestampStr = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+        fileString = timestampStr
+        for arg in args:
+            fileString += ","+str(arg)            
+        fileString+="\n"
+        f.write(fileString)
+    
+def marker_handler(address: str,i):
+    global recording
+    global auxCount
+    print(f"Received Marker: {address}")  # <-- ADD THIS LINE
+    timestampStr = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+    markerNum = address[-1]
+    if recording:
+        fileString = timestampStr+',,,,,'
+        for x in range (0,auxCount):
+            fileString +=','
+        fileString +='/Marker/'+markerNum+"\n"
+        f.write(fileString)
+    if (markerNum=="1"):        
+        recording = True
+        print("Recording Started.")
+    if (markerNum=="2"):
+        f.close()
+        recording = False
+        server.shutdown()
+        print("Recording Stopped.")    
 
 if __name__ == "__main__":
-    local_ip = get_local_ip()
-    port = 5000
+    dispatcher = dispatcher.Dispatcher()
+    dispatcher.map("/muse/eeg", eeg_handler)
+    dispatcher.map("/Marker/*", marker_handler)
 
-    print(f"[SERVER] Local IP detected as: {local_ip}")
-    print("[SERVER] IMPORTANT: Ensure your Muse S OSC output is set to this IP and port:", port)
-
-    disp = dispatcher.Dispatcher()
-    osc_paths = [
-        "/muse/elements/delta_absolute",
-        "/muse/elements/theta_absolute",
-        "/muse/elements/alpha_absolute",
-        "/muse/elements/beta_absolute",
-        "/muse/elements/gamma_absolute",
-        "/muse/elements/heart_rate"
-    ]
-    for path in osc_paths:
-        disp.map(path, save_data)
-
-    try:
-        server = osc_server.ThreadingOSCUDPServer(("0.0.0.0", port), disp)
-        print(f"[SERVER] Listening for OSC messages on {local_ip}:{port}")
-        print(f"[SERVER] Data will be saved to: {csv_file}")
-        print("[SERVER] Press Ctrl+C to stop the server...")
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\n[SERVER] Server stopped.")
+    server = osc_server.ThreadingOSCUDPServer((ip, port), dispatcher)
+    print("Listening on UDP port "+str(port)+"\nSend Marker 1 to Start recording and Marker 2 to Stop Recording.")
+    server.serve_forever()
